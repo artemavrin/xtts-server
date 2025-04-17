@@ -27,6 +27,9 @@ try:
     gpu_available = torch.cuda.is_available()
     print(f"      ✅ PyTorch: {torch.__version__} (GPU {'available 🚀' if gpu_available else 'not available 🐢'})")
     
+    import transformers
+    print(f"      ✅ Transformers: {transformers.__version__}")
+
     import fastapi
     print(f"      ✅ FastAPI: {fastapi.__version__}")
     

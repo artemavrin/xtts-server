@@ -1,4 +1,6 @@
-# XTTS Streaming Server
+# XTTS Server
+
+> Inspired by [coqui-ai/xtts-streaming-server](https://github.com/coqui-ai/xtts-streaming-server)
 
 Optimized server for streaming synthesized speech using the XTTS model with support for voice cloning and caching.
 
@@ -34,6 +36,8 @@ xtts-server/
 │   ├── __init__.py
 │   ├── routes.py        # API routes
 │   └── responses.py     # Response handling
+├── test/                # Test directory
+│   └── test.py          # Test script for streaming verification
 ├── requirements.txt
 └── run.py               # Startup script
 ```
@@ -42,14 +46,14 @@ xtts-server/
 
 ### Requirements
 
-- Python 3.8+
+- Python 3.10+
 - CUDA-compatible GPU (optional, for acceleration)
 
 ### Setup
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/xtts-streaming-server.git
+git clone https://github.com/artemavrin/xtts-streaming-server.git
 cd xtts-streaming-server
 ```
 
@@ -146,15 +150,33 @@ The server includes several optimizations for maximum performance:
 4. **Batch Processing**: Splitting long texts into chunks for efficient processing
 5. **Minimal Latency**: Immediate WAV header and silence sending for connection establishment
 
-## Troubleshooting
+## Testing
 
-### Tensor Dimension Error
+The project includes a test script to verify the streaming functionality:
 
-If you see an error like `Tensors must have same number of dimensions: got 2 and 3`, this means there's an issue with voice tensor dimensions. Check that saved voices have the correct shape.
+```
+xtts-server/
+├── test/              # Test directory
+│   └── test.py        # Test script for streaming verification
+```
 
-### Memory Leaks
+To run the test:
 
-If you observe memory leaks, add the `SPEAKER_CACHE_TTL` environment variable with a smaller value for more frequent cache cleanup.
+```bash
+python test/test.py
+```
+
+The test script will:
+1. Start a test server instance
+2. Send a test request to the streaming endpoint
+3. Verify the audio stream response
+4. Clean up resources after completion
+
+You can modify the test parameters in `test.py` to test different:
+- Text inputs
+- Languages
+- Voice settings
+- Streaming configurations
 
 ## License
 
