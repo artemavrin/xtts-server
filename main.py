@@ -17,35 +17,35 @@ from services.cache import SpeakerCache
 from services.utils import preload_voices_to_cache
 from api.routes import router
 
-# Оптимизированные параметры генерации для более быстрого вывода
+# Optimized generation parameters for faster output
 OPTIMIZED_GENERATION_CONFIG = GenerationConfig(
     do_sample=False,
     num_beams=1,
     do_stream=True,
-    temperature=1.0,  # Более низкая температура для более быстрых, детерминированных выводов
-    repetition_penalty=1.0  # Стандартное значение, регулируйте при необходимости
+    temperature=1.0,  # Lower temperature for faster, more deterministic outputs
+    repetition_penalty=1.0  # Standard value, adjust as needed
 )
 
-# Настройка многопоточности и устройства
+# Multithreading and device setup
 torch.set_num_threads(int(os.environ.get("NUM_THREADS", os.cpu_count())))
 device = torch.device("cuda" if os.environ.get(
     "USE_CPU", "0") == "0" and torch.cuda.is_available() else "cpu")
 
-# Функция для применения оптимизаций в зависимости от доступного оборудования
+# Function to apply optimizations based on available hardware
 def configure_model_optimizations():
-    """Применяем оптимизации производительности в зависимости от доступного оборудования"""
+    """Apply performance optimizations based on available hardware"""
     if device.type == "cuda":
-        # Оптимизации для GPU
+        # GPU Optimizations
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
         if hasattr(torch.backends.cudnn, "allow_tf32"):
             torch.backends.cudnn.allow_tf32 = True
-        
-        # Если у вас достаточно видеопамяти, используйте эти настройки:
+
+        # If you have enough VRAM, use these settings:
         if torch.cuda.get_device_properties(0).total_memory > 8 * 1024 * 1024 * 1024:  # > 8GB
             return {
                 "use_fp16": True,
-                "batch_size": 2,  # Можно увеличить в зависимости от объема видеопамяти
+                "batch_size": 2,  # Can be increased depending on VRAM amount
             }
         else:
             return {
@@ -53,17 +53,17 @@ def configure_model_optimizations():
                 "batch_size": 1,
             }
     else:
-        # Оптимизации для CPU
+        # CPU Optimizations
         torch.set_num_threads(int(os.environ.get("NUM_THREADS", os.cpu_count())))
         return {
             "use_fp16": False,
             "batch_size": 1,
         }
 
-# Применяем оптимизации
+# Apply optimizations
 model_opts = configure_model_optimizations()
 
-# Инициализация приложения
+# Application initialization
 app = FastAPI(
     title="XTTS Streaming Server",
     description="""XTTS Streaming server with support for concurrent requests and voice cloning""",
@@ -71,12 +71,12 @@ app = FastAPI(
     docs_url="/",
 )
 
-# Глобальные объекты
+# Global objects
 tts_manager = TTSManager()
 voice_storage = VoiceStorage(VOICES_DIR)
 speaker_cache = SpeakerCache(ttl=SPEAKER_CACHE_TTL, max_size=SPEAKER_CACHE_MAX_SIZE)
 
-# Добавление CORS middleware
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -85,14 +85,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Обработчик исключений
+# Exception handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Глобальный обработчик исключений"""
+    """Global exception handler"""
     print(f"Global exception handler caught: {str(exc)}", flush=True)
     print(f"Exception traceback: {traceback.format_exc()}", flush=True)
-    
-    # Более детальная обработка ошибок
+
+    # More detailed error handling
     error_detail = str(exc)
     if "Error processing audio file" in error_detail:
         status_code = 400
@@ -110,22 +110,22 @@ async def global_exception_handler(request: Request, exc: Exception):
         }
     )
 
-# Функция запуска сервера
+# Server startup function
 @app.on_event("startup")
 async def startup_event():
     """
-    Выполняется при запуске сервера - инициализация всех компонентов
+    Executed on server startup - initializes all components
     """
     global tts_manager, voice_storage, speaker_cache
     
     try:
-        # Инициализация TTS модели
+        # Initialize TTS model
         tts_manager.initialize_model()
         
-        # Создание семафора для контроля доступа к модели
+        # Create semaphore to control access to the model
         tts_manager.set_semaphore(MAX_CONCURRENT_REQUESTS)
         
-        # Предзагрузка голосов в кэш
+        # Preload voices into cache
         await preload_voices_to_cache(
             tts_manager.model,
             speaker_cache,
@@ -142,21 +142,21 @@ async def startup_event():
         print(f"Startup error traceback: {traceback.format_exc()}", flush=True)
         raise
 
-# Регистрация маршрутов
+# Register routes
 app.include_router(router)
 
-# Если файл запускается напрямую
+# If the file is run directly
 if __name__ == "__main__":
     import uvicorn
     import os
     
-    # Получаем порт из переменных окружения или используем порт по умолчанию
+    # Get port from environment variables or use default
     port = int(os.environ.get("PORT", 8000))
     
-    # Запускаем сервер
+    # Start the server
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=port,
-        workers=1  # Несколько воркеров не рекомендуется с GPU-моделями
+        workers=1  # Multiple workers are not recommended with GPU models
     )

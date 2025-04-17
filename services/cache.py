@@ -4,15 +4,15 @@ from typing import Dict, Any, Tuple, Optional, TypeVar, Generic
 T = TypeVar('T')
 
 class SpeakerCache(Generic[T]):
-    """Кэш голосов с метриками производительности"""
+    """Voice cache with performance metrics"""
     
     def __init__(self, ttl: int = 3600, max_size: int = 100):
         """
-        Инициализация кэша с параметрами
+        Initialize cache with parameters
         
         Args:
-            ttl: Время жизни записей в секундах
-            max_size: Максимальное количество записей в кэше
+            ttl: Record lifetime in seconds
+            max_size: Maximum number of records in the cache
         """
         self.cache: Dict[str, Tuple[T, float]] = {}
         self.ttl = ttl
@@ -20,57 +20,57 @@ class SpeakerCache(Generic[T]):
         self.hits = 0
         self.misses = 0
         self.last_cleanup = time.time()
-        self.cleanup_interval = 300  # Интервал очистки кэша в секундах
+        self.cleanup_interval = 300  # Cache cleanup interval in seconds
     
     def get(self, key: str) -> Optional[T]:
         """
-        Получение данных из кэша с проверкой TTL
+        Get data from cache with TTL check
         
         Args:
-            key: Ключ для поиска в кэше
+            key: Key to search in the cache
             
         Returns:
-            Данные из кэша или None, если данные не найдены или устарели
+            Data from cache or None if data not found or expired
         """
         now = time.time()
         
-        # Периодическая очистка устаревших записей
+        # Periodic cleanup of expired records
         if now - self.last_cleanup > self.cleanup_interval:
             self._cleanup_expired()
         
         if key in self.cache:
             data, timestamp = self.cache[key]
             if now - timestamp < self.ttl:
-                # Кэш-хит
+                # Cache hit
                 self.hits += 1
-                # Обновляем время доступа (для LRU)
+                # Update access time (for LRU)
                 self.cache[key] = (data, now)
                 return data
-            # Истекло
+            # Expired
             del self.cache[key]
         
-        # Кэш-мисс
+        # Cache miss
         self.misses += 1
         return None
     
     def set(self, key: str, data: T) -> None:
         """
-        Добавление данных в кэш
+        Add data to cache
         
         Args:
-            key: Ключ для сохранения в кэше
-            data: Данные для сохранения
+            key: Key to save in cache
+            data: Data to save
         """
         now = time.time()
         
-        # Если кэш заполнен, удаляем наименее недавно использованные элементы
+        # If cache is full, remove least recently used items
         if len(self.cache) >= self.max_size and key not in self.cache:
             self._cleanup_lru()
         
         self.cache[key] = (data, now)
     
     def _cleanup_expired(self) -> None:
-        """Очистка устаревших записей кэша"""
+        """Clean up expired cache records"""
         now = time.time()
         expired_keys = []
         
@@ -87,14 +87,14 @@ class SpeakerCache(Generic[T]):
             print(f"Cache cleanup: removed {len(expired_keys)} expired entries. Current size: {len(self.cache)}", flush=True)
     
     def _cleanup_lru(self) -> None:
-        """Удаление наименее недавно использованных элементов кэша"""
+        """Remove least recently used cache items"""
         if not self.cache:
             return
         
-        # Сортировка по времени последнего доступа
+        # Sort by last access time
         sorted_keys = sorted(self.cache.keys(), key=lambda k: self.cache[k][1])
         
-        # Удаляем 25% наименее недавно использованных элементов
+        # Remove 25% of least recently used items
         keys_to_remove = sorted_keys[:max(1, len(sorted_keys) // 4)]
         
         for key in keys_to_remove:
@@ -103,16 +103,16 @@ class SpeakerCache(Generic[T]):
         print(f"Cache LRU cleanup: removed {len(keys_to_remove)} least recently used entries. Current size: {len(self.cache)}", flush=True)
     
     def clear(self) -> None:
-        """Полная очистка кэша"""
+        """Complete cache cleanup"""
         self.cache.clear()
         print("Cache cleared", flush=True)
     
     def get_stats(self) -> Dict[str, Any]:
         """
-        Получение статистики работы кэша
+        Get cache operation statistics
         
         Returns:
-            Словарь со статистикой кэша
+            Dictionary with cache statistics
         """
         total_requests = self.hits + self.misses
         hit_rate = (self.hits / total_requests * 100) if total_requests > 0 else 0

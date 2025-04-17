@@ -1,161 +1,161 @@
 # XTTS Streaming Server
 
-Оптимизированный сервер для потоковой передачи синтезированной речи с использованием XTTS (Coqui-AI). Поддерживает клонирование голоса в режиме реального времени, кэширование голосов, пакетную обработку длинных текстов и многое другое.
+Optimized server for streaming synthesized speech using the XTTS model with support for voice cloning and caching.
 
-## Особенности
+## Features
 
-- **Потоковая передача речи**: мгновенное начало синтеза с отправкой аудио по мере генерации
-- **Клонирование голоса**: создание голосов из аудиофайлов с возможностью повторного использования
-- **Хранение голосов**: сохранение клонированных голосов для последующего использования
-- **Кэширование**: оптимизация производительности за счет кэширования голосов в памяти
-- **Пакетная обработка**: эффективная обработка длинных текстов разбиением на фрагменты
-- **Мониторинг**: отслеживание статуса генерации и управление сессиями
-- **Многоязычность**: поддержка всех языков, доступных в XTTS
+- **Speech Streaming**: Instant synthesis start with audio streaming as it's generated
+- **Voice Cloning**: Create voices from audio files with reusability
+- **Voice Storage**: Save cloned voices for later use
+- **Caching**: Performance optimization through voice caching in memory
+- **Batch Processing**: Efficient processing of long texts by splitting into chunks
+- **Monitoring**: Track generation status and manage sessions
+- **Multilingual**: Support for all languages available in XTTS
 
-## Архитектура
+## Architecture
 
-Проект имеет модульную архитектуру:
+The project has a modular architecture:
 
 ```
 xtts-server/
-├── main.py              # Основной файл с FastAPI приложением
-├── config.py            # Настройки и конфигурации
-├── models/              # Модели данных
+├── main.py              # Main file with FastAPI application
+├── config.py            # Settings and configurations
+├── models/              # Data models
 │   ├── __init__.py
-│   ├── inputs.py        # Модели входных данных (Pydantic)
-│   └── voice_storage.py # Класс для хранения голосов
-├── services/            # Сервисы
+│   ├── inputs.py        # Input data models (Pydantic)
+│   └── voice_storage.py # Voice storage class
+├── services/            # Services
 │   ├── __init__.py
-│   ├── audio.py         # Функции обработки аудио
-│   ├── cache.py         # Кэширование голосов
-│   ├── tts.py           # Основная логика TTS
-│   └── utils.py         # Вспомогательные функции
-├── api/                 # API слой
+│   ├── audio.py         # Audio processing functions
+│   ├── cache.py         # Voice caching
+│   ├── tts.py           # Main TTS logic
+│   └── utils.py         # Utility functions
+├── api/                 # API layer
 │   ├── __init__.py
-│   ├── routes.py        # API маршруты
-│   └── responses.py     # Обработка ответов
+│   ├── routes.py        # API routes
+│   └── responses.py     # Response handling
 ├── requirements.txt
-└── run.py               # Скрипт запуска
+└── run.py               # Startup script
 ```
 
-## Установка
+## Installation
 
-### Требования
+### Requirements
 
 - Python 3.8+
-- CUDA-совместимая GPU (опционально, для ускорения)
+- CUDA-compatible GPU (optional, for acceleration)
 
-### Настройка
+### Setup
 
-1. Клонируйте репозиторий:
+1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/xtts-streaming-server.git
 cd xtts-streaming-server
 ```
 
-2. Создайте и активируйте виртуальное окружение:
+2. Create and activate virtual environment:
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # На Windows: .venv\Scripts\activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-3. Установите зависимости:
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## Запуск сервера
+## Starting the Server
 
-Запустите сервер командой:
+Start the server with:
 ```bash
 python run.py
 ```
 
-Сервер будет доступен по адресу `http://localhost:8000`. Swagger документация доступна по этому же адресу.
+The server will be available at `http://localhost:8000`. Swagger documentation is available at the same address.
 
-## Настройка через переменные окружения
+## Environment Variables Configuration
 
-Сервер можно настроить с помощью переменных окружения:
+The server can be configured using environment variables:
 
-- `PORT` - порт для запуска (по умолчанию 8000)
-- `DEBUG` - режим отладки (по умолчанию False)
-- `NUM_THREADS` - количество потоков CPU (по умолчанию количество ядер)
-- `MAX_CONCURRENT_REQUESTS` - максимальное количество одновременных запросов (по умолчанию 10)
-- `CUSTOM_MODEL_PATH` - путь к пользовательской модели XTTS
-- `USE_CPU` - принудительное использование CPU даже при наличии GPU (по умолчанию False)
-- `SPEAKER_CACHE_TTL` - время жизни кэша голосов в секундах (по умолчанию 3600)
-- `SPEAKER_CACHE_MAX_SIZE` - максимальный размер кэша голосов (по умолчанию 100)
-- `PRELOAD_VOICES` - список голосов для предварительной загрузки (через запятую)
-- `VOICES_DIR` - директория для хранения сохраненных голосов (по умолчанию ./saved_voices)
+- `PORT` - Port to run on (default 8000)
+- `DEBUG` - Debug mode (default False)
+- `NUM_THREADS` - Number of CPU threads (default number of cores)
+- `MAX_CONCURRENT_REQUESTS` - Maximum number of concurrent requests (default 10)
+- `CUSTOM_MODEL_PATH` - Path to custom XTTS model
+- `USE_CPU` - Force CPU usage even with GPU available (default False)
+- `SPEAKER_CACHE_TTL` - Voice cache lifetime in seconds (default 3600)
+- `SPEAKER_CACHE_MAX_SIZE` - Maximum voice cache size (default 100)
+- `PRELOAD_VOICES` - List of voices to preload (comma-separated)
+- `VOICES_DIR` - Directory for storing saved voices (default ./saved_voices)
 
-## API документация
+## API Documentation
 
-### Основные эндпоинты
+### Main Endpoints
 
-- **POST /tts_stream** - Потоковый синтез речи
-- **POST /tts** - Синтез полного аудио (не потоковый)
-- **POST /clone_speaker** - Клонирование голоса из аудиофайла
-- **POST /save_voice/{voice_id}** - Сохранение клонированного голоса
-- **GET /saved_voices** - Получение списка сохраненных голосов
-- **DELETE /saved_voices/{voice_id}** - Удаление сохраненного голоса
-- **GET /cache/stats** - Статистика кэша голосов
-- **POST /cache/clear** - Очистка кэша голосов
-- **GET /stream_status/{session_id}** - Статус потоковой сессии
-- **DELETE /stream_cancel/{session_id}** - Отмена потоковой сессии
-- **GET /available_speakers** - Доступные встроенные голоса
-- **GET /languages** - Доступные языки
-- **GET /health** - Проверка статуса сервера
+- **POST /tts_stream** - Stream speech synthesis
+- **POST /tts** - Full audio synthesis (non-streaming)
+- **POST /clone_speaker** - Clone voice from audio file
+- **POST /save_voice/{voice_id}** - Save cloned voice
+- **GET /saved_voices** - Get list of saved voices
+- **DELETE /saved_voices/{voice_id}** - Delete saved voice
+- **GET /cache/stats** - Voice cache statistics
+- **POST /cache/clear** - Clear voice cache
+- **GET /stream_status/{session_id}** - Streaming session status
+- **DELETE /stream_cancel/{session_id}** - Cancel streaming session
+- **GET /available_speakers** - Available built-in voices
+- **GET /languages** - Available languages
+- **GET /health** - Server health check
 
-## Примеры использования
+## Usage Examples
 
-### Синтез речи с клонированным голосом
+### Speech Synthesis with Cloned Voice
 
-1. Клонирование голоса:
+1. Clone voice:
 ```bash
 curl -X POST "http://localhost:8000/clone_speaker" \
   -F "wav_file=@path/to/voice-sample.wav" \
-  -F 'options={"response_format": "save", "save_id": "my-voice", "name": "Мой голос", "description": "Описание голоса"}'
+  -F 'options={"response_format": "save", "save_id": "my-voice", "name": "My Voice", "description": "Voice description"}'
 ```
 
-2. Синтез речи с сохраненным голосом:
+2. Synthesize speech with saved voice:
 ```bash
 curl -X POST "http://localhost:8000/tts_stream" \
   -H "Content-Type: application/json" \
-  -d '{"text": "Текст для озвучивания", "language": "ru", "speaker_id": "my-voice"}'
+  -d '{"text": "Text to synthesize", "language": "en", "speaker_id": "my-voice"}'
 ```
 
-### Получение статистики кэша
+### Get Cache Statistics
 
 ```bash
 curl -X GET "http://localhost:8000/cache/stats"
 ```
 
-### Проверка состояния сессии
+### Check Session Status
 
 ```bash
 curl -X GET "http://localhost:8000/stream_status/{session_id}"
 ```
 
-## Оптимизации производительности
+## Performance Optimizations
 
-Сервер включает несколько оптимизаций для максимальной производительности:
+The server includes several optimizations for maximum performance:
 
-1. **Кэширование голосов**: голоса сохраняются в памяти для быстрого доступа
-2. **Предзагрузка голосов**: часто используемые голоса загружаются при запуске сервера
-3. **Эффективное управление ресурсами**: семафоры для контроля доступа к модели
-4. **Пакетная обработка**: разбиение длинных текстов на фрагменты для эффективной обработки
-5. **Минимальная задержка**: немедленная отправка WAV-заголовка и тишины для установления соединения
+1. **Voice Caching**: Voices are cached in memory for quick access
+2. **Voice Preloading**: Frequently used voices are loaded at server startup
+3. **Efficient Resource Management**: Semaphores for model access control
+4. **Batch Processing**: Splitting long texts into chunks for efficient processing
+5. **Minimal Latency**: Immediate WAV header and silence sending for connection establishment
 
-## Решение проблем
+## Troubleshooting
 
-### Ошибка размерностей тензоров
+### Tensor Dimension Error
 
-Если вы видите ошибку вида `Tensors must have same number of dimensions: got 2 and 3`, это означает, что есть проблема с размерностью тензоров голоса. Проверьте, что сохраненные голоса имеют правильную форму.
+If you see an error like `Tensors must have same number of dimensions: got 2 and 3`, this means there's an issue with voice tensor dimensions. Check that saved voices have the correct shape.
 
-### Утечки памяти
+### Memory Leaks
 
-Если вы наблюдаете утечки памяти, добавьте переменную окружения `SPEAKER_CACHE_TTL` с меньшим значением для более частой очистки кэша.
+If you observe memory leaks, add the `SPEAKER_CACHE_TTL` environment variable with a smaller value for more frequent cache cleanup.
 
-## Лицензия
+## License
 
-Этот проект распространяется под лицензией MIT.
+This project is distributed under the MIT license.

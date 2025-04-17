@@ -24,22 +24,22 @@ from services.audio import (
 )
 from services.utils import active_sessions, _cleanup_session
 
-# Оптимизированные параметры генерации для более быстрого вывода
+# Optimized generation parameters for faster output
 OPTIMIZED_GENERATION_CONFIG = GenerationConfig(
     do_sample=False,
     num_beams=1,
     do_stream=True,
-    temperature=1.0,  # Более низкая температура для более быстрых, детерминированных выводов
-    repetition_penalty=1.0  # Стандартное значение, регулируйте при необходимости
+    temperature=1.0,  # Lower temperature for faster, more deterministic outputs
+    repetition_penalty=1.0  # Standard value, adjust as needed
 )
-# Добавляем XttsConfig в список безопасных глобальных объектов
+# Add XttsConfig to the list of safe global objects
 torch.serialization.add_safe_globals([XttsConfig])
 
 class TTSManager:
-    """Менеджер для работы с TTS-моделью"""
+    """Manager for working with TTS model"""
     
     def __init__(self):
-        """Инициализация менеджера TTS (без загрузки модели)"""
+        """Initialize TTS manager (without loading the model)"""
         self.model = None
         self.config = None
         self.semaphore = None
@@ -47,14 +47,14 @@ class TTSManager:
     
     def initialize_model(self) -> Tuple[Xtts, XttsConfig]:
         """
-        Инициализация TTS модели
+        Initialize TTS model
         
         Returns:
-            Кортеж (модель, конфигурация)
+            Tuple (model, configuration)
         """
         print("Loading XTTS model...", flush=True)
         
-        # Загрузка конфигурации модели
+        # Load model configuration
         if os.path.exists(CUSTOM_MODEL_PATH) and os.path.isfile(CUSTOM_MODEL_PATH + "/config.json"):
             model_path = CUSTOM_MODEL_PATH
             print(f"Loading custom model from {model_path}", flush=True)
@@ -79,7 +79,7 @@ class TTSManager:
         )
         model.to(device.type)
         
-        # Предзагрузка фонемизаторов для распространенных языков
+        # Preload phonemizers for common languages
         if hasattr(model, "phonemizer") and hasattr(model.phonemizer, "preload_languages"):
             print("Preloading language phonemizers...", flush=True)
             common_languages = ["en", "es", "fr", "de", "it", "pt", "ru", "zh", "ja", "ko"]
@@ -93,10 +93,10 @@ class TTSManager:
     
     def set_semaphore(self, max_concurrent_requests: int) -> None:
         """
-        Устанавливает семафор для ограничения одновременных запросов
+        Set semaphore to limit concurrent requests
         
         Args:
-            max_concurrent_requests: Максимальное количество одновременных запросов
+            max_concurrent_requests: Maximum number of concurrent requests
         """
         self.semaphore = asyncio.Semaphore(max_concurrent_requests)
     
@@ -111,28 +111,28 @@ class TTSManager:
         add_wav_header: bool = True
     ) -> AsyncGenerator[bytes, None]:
         """
-        Генерирует аудио-фрагменты потока для данной сессии
+        Generate audio stream chunks for the given session
         
         Args:
-            session_id: ID сессии
-            text: Текст для синтеза
-            language: Код языка
-            gpt_cond_latent: Латентное представление голоса
-            speaker_embedding: Вложение голоса
-            stream_chunk_size: Размер фрагмента потока
-            add_wav_header: Добавлять ли WAV-заголовок
-            normalize: Нормализовать ли аудио
-            target_sample_rate: Целевая частота дискретизации
-            apply_fade_in_out: Применять ли эффект затухания в начале и конце
+            session_id: Session ID
+            text: Text to synthesize
+            language: Language code
+            gpt_cond_latent: Voice latent representation
+            speaker_embedding: Voice embedding
+            stream_chunk_size: Stream chunk size
+            add_wav_header: Whether to add WAV header
+            normalize: Whether to normalize audio
+            target_sample_rate: Target sampling rate
+            apply_fade_in_out: Whether to apply fade effect at start and end
             
         Yields:
-            Аудио-фрагменты в байтах
+            Audio chunks in bytes
         """
         if not self.model_loaded:
             raise RuntimeError("TTS model is not loaded")
         
         try:
-            # Сохраняем информацию о сессии
+            # Save session information
             active_sessions[session_id] = {
                 "status": "processing",
                 "text": text,
@@ -142,20 +142,20 @@ class TTSManager:
             
             print(f"[{session_id}] Starting TTS stream generation with text: '{text[:30]}...'", flush=True)
 
-            # Получаем семафор только для настройки вывода модели
+            # Get semaphore only for model output setup
             async with self.semaphore:
-                # Проверяем и логируем размерность тензоров перед инференсом
+                # Check and log tensor dimensions before inference
                 #print(f"[{session_id}] gpt_cond_latent dimensions: {gpt_cond_latent.dim()}, "f"shape: {list(gpt_cond_latent.shape)}", flush=True)
                 
-                # Отладочная печать атрибутов config (можно оставить для проверки)
+                # Debug print of config attributes (can be left for verification)
                 #print(f"[{session_id}] Global config attributes before inference: {vars(OPTIMIZED_GENERATION_CONFIG)}", flush=True)
                 
-                # Очищаем кэш модели перед генерацией (оставляем, если нужно)
+                # Clear model cache before generation (leave if needed)
                 if hasattr(self.model, "clear_cache"):
                     self.model.clear_cache()
                     print(f"[{session_id}] Model cache cleared", flush=True)
                 
-                # Настраиваем генератор потока с глобальной конфигурацией
+                # Configure stream generator with global configuration
                 chunks_generator = self.model.inference_stream(
                     text,
                     language,
@@ -163,16 +163,16 @@ class TTSManager:
                     speaker_embedding,
                     stream_chunk_size=stream_chunk_size,
                     enable_text_splitting=True,
-                    generation_config=OPTIMIZED_GENERATION_CONFIG # <-- Передаем глобальную
+                    generation_config=OPTIMIZED_GENERATION_CONFIG # <-- Pass global
                 )
                 print(f"[{session_id}] Inference stream initialized", flush=True)
             
-            # Обрабатываем фрагменты без блокировки семафора
+            # Process chunks without semaphore blocking
             audio_chunk_count = 0
             for i, chunk in enumerate(chunks_generator):
                 audio_chunk_count += 1
                 
-                # Применяем обработку аудио
+                # Apply audio processing
                 chunk = postprocess(chunk)
                 
                 if i == 0 and add_wav_header:
@@ -181,38 +181,38 @@ class TTSManager:
                 else:
                     yield chunk.tobytes()
                 
-                # Проверяем, была ли сессия отменена
+                # Check if session was canceled
                 if session_id in active_sessions and active_sessions[session_id]["status"] == "canceled":
                     print(f"[{session_id}] Stream generation canceled", flush=True)
                     return
                 
-                # Периодически логируем прогресс
+                # Periodically log progress
                 if audio_chunk_count % 10 == 0:
                     print(f"[{session_id}] Generated {audio_chunk_count} audio chunks", flush=True)
 
-            # Обновляем статус сессии по завершении
+            # Update session status on completion
             if session_id in active_sessions:
                 active_sessions[session_id]["status"] = "completed"
             
             print(f"[{session_id}] Stream generation completed, generated {audio_chunk_count} audio chunks", flush=True)
         
         except Exception as e:
-            # Обновляем статус сессии при ошибке
+            # Update session status on error
             if session_id in active_sessions:
                 active_sessions[session_id]["status"] = "error"
                 active_sessions[session_id]["error"] = str(e)
             
-            # Подробное логирование ошибки
+            # Detailed error logging
             print(f"[{session_id}] Error in stream_generator: {str(e)}", flush=True)
             print(f"[{session_id}] Error traceback: {traceback.format_exc()}", flush=True)
             
-            # Если ошибка связана с размерностью тензоров, логируем их формы
+            # If error is related to tensor dimensions, log their shapes
             if "dimensions" in str(e) and "gpt_cond_latent" in locals():
                 print(f"[{session_id}] Error with tensor dimensions. "
                      f"gpt_cond_latent shape: {list(gpt_cond_latent.shape)}, "
                      f"speaker_embedding shape: {list(speaker_embedding.shape)}", flush=True)
             
-            # Очищаем кэш модели при ошибке
+            # Clear model cache on error
             if hasattr(self.model, "clear_cache"):
                 self.model.clear_cache()
                 print(f"[{session_id}] Model cache cleared after error", flush=True)
@@ -220,7 +220,7 @@ class TTSManager:
             raise HTTPException(status_code=500, detail=str(e))
         
         finally:
-            # Очищаем сессию
+            # Clean up session
             asyncio.create_task(_cleanup_session(session_id))
     
     async def synthesize_full(
@@ -231,23 +231,23 @@ class TTSManager:
         speaker_embedding: torch.Tensor
     ) -> bytes:
         """
-        Синтезирует полное аудио (не в потоковом режиме)
+        Synthesize full audio (non-streaming)
         
         Args:
-            text: Текст для синтеза
-            language: Код языка
-            gpt_cond_latent: Латентное представление голоса
-            speaker_embedding: Вложение голоса
+            text: Text to synthesize
+            language: Language code
+            gpt_cond_latent: Voice latent representation
+            speaker_embedding: Voice embedding
             
         Returns:
-            Аудиоданные в формате WAV (байты)
+            Audio data in WAV format (bytes)
         """
         if not self.model_loaded:
             raise RuntimeError("TTS model is not loaded")
         
         try:
             async with self.semaphore:
-                # Генерируем речь
+                # Generate speech
                 out = self.model.inference(
                     text,
                     language,
@@ -267,10 +267,10 @@ class TTSManager:
     
     def get_available_languages(self) -> List[str]:
         """
-        Получает список поддерживаемых языков
+        Get list of supported languages
         
         Returns:
-            Список кодов языков
+            List of language codes
         """
         if not self.model_loaded:
             raise RuntimeError("TTS model is not loaded")
@@ -279,10 +279,10 @@ class TTSManager:
     
     def get_available_speakers(self) -> Dict[str, Dict[str, Any]]:
         """
-        Получает список доступных встроенных голосов
+        Get list of available built-in voices
         
         Returns:
-            Словарь с информацией о голосах
+            Dictionary with voice information
         """
         if not self.model_loaded:
             raise RuntimeError("TTS model is not loaded")

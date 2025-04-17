@@ -4,11 +4,11 @@ from fastapi import HTTPException, status
 
 class ErrorResponse(JSONResponse):
     """
-    Стандартизированный ответ с ошибкой
+    Standardized error response
     
     Args:
-        detail: Детальное описание ошибки
-        status_code: HTTP-код статуса
+        detail: Detailed error description
+        status_code: HTTP status code
     """
     def __init__(
         self,
@@ -20,12 +20,12 @@ class ErrorResponse(JSONResponse):
 
 class SuccessResponse(JSONResponse):
     """
-    Стандартизированный успешный ответ
+    Standardized success response
     
     Args:
-        data: Данные для возврата
-        message: Опциональное сообщение
-        status_code: HTTP-код статуса
+        data: Data to return
+        message: Optional message
+        status_code: HTTP status code
     """
     def __init__(
         self,
@@ -42,13 +42,13 @@ class SuccessResponse(JSONResponse):
 
 class AudioStreamingResponse(StreamingResponse):
     """
-    Ответ с потоковой передачей аудио
+    Audio streaming response
     
     Args:
-        content: Аудиоданные или генератор аудиоданных
-        session_id: ID сессии для отслеживания
-        status_code: HTTP-код статуса
-        headers: Дополнительные заголовки
+        content: Audio data or audio data generator
+        session_id: Session ID for tracking
+        status_code: HTTP status code
+        headers: Additional headers
     """
     def __init__(
         self,
@@ -60,7 +60,7 @@ class AudioStreamingResponse(StreamingResponse):
         if headers is None:
             headers = {}
         
-        # Добавляем ID сессии в заголовки
+        # Add session ID to headers
         headers["X-Session-ID"] = session_id
         
         super().__init__(

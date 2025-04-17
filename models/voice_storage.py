@@ -3,27 +3,30 @@ import time
 import torch
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Union
+import numpy as np
+from datetime import datetime
 
 class VoiceStorage:
-    """Класс для работы с хранилищем голосов"""
+    """Voice storage with metadata"""
     
-    def __init__(self, storage_dir: Path):
-        """
-        Инициализация хранилища голосов
+    def __init__(self, storage_dir: str = "voices"):
+        """Initialize voice storage
         
         Args:
-            storage_dir: Директория для хранения файлов голосов
+            storage_dir: Directory for storing voices
         """
         self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(exist_ok=True)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.metadata_file = self.storage_dir / "metadata.json"
-        
-        # Загружаем метаданные или создаем новые
+        self.metadata = self._load_metadata()
+    
+    def _load_metadata(self):
+        """Load metadata from file or create new if not exists"""
         if self.metadata_file.exists():
             with open(self.metadata_file, "r") as f:
-                self.metadata = json.load(f)
+                return json.load(f)
         else:
-            self.metadata = {}
+            return {}
     
     def save_voice(self, 
                    voice_id: str, 
@@ -32,38 +35,38 @@ class VoiceStorage:
                    name: Optional[str] = None, 
                    description: Optional[str] = None) -> str:
         """
-        Сохраняет голос в хранилище с правильной обработкой тензоров
+        Save voice to storage with proper tensor handling
         
         Args:
-            voice_id: Идентификатор голоса
-            gpt_cond_latent: Латентное представление для GPT-модели
-            speaker_embedding: Векторное представление голоса
-            name: Название голоса (опционально)
-            description: Описание голоса (опционально)
+            voice_id: Voice identifier
+            gpt_cond_latent: GPT model latent representation
+            speaker_embedding: Voice embedding vector
+            name: Voice name (optional)
+            description: Voice description (optional)
             
         Returns:
-            ID сохраненного голоса
+            ID of saved voice
         """
-        # Проверяем и нормализуем размерность gpt_cond_latent
+        # Check and normalize gpt_cond_latent dimensions
         if hasattr(gpt_cond_latent, "dim") and gpt_cond_latent.dim() < 3:
-            # Добавляем размерности, если необходимо
+            # Add dimensions if needed
             if gpt_cond_latent.dim() == 1:
                 gpt_cond_latent = gpt_cond_latent.unsqueeze(0).unsqueeze(0)
             elif gpt_cond_latent.dim() == 2:
                 gpt_cond_latent = gpt_cond_latent.unsqueeze(0)
         
-        # Преобразуем тензоры в списки для сохранения в JSON
+        # Convert tensors to lists for JSON storage
         if hasattr(gpt_cond_latent, "cpu"):
-            # Убеждаемся, что тензор имеет правильную форму перед сохранением
+            # Ensure tensor has correct shape before saving
             gpt_cond_latent_cpu = gpt_cond_latent.cpu()
             
-            # Сохраняем форму тензора для последующего восстановления
+            # Save tensor shape for later restoration
             tensor_shape = list(gpt_cond_latent_cpu.shape)
             
-            # Сохраняем данные как плоский список
+            # Save data as flat list
             gpt_cond_latent_data = gpt_cond_latent_cpu.reshape(-1).tolist()
         else:
-            # Если это не тензор, а список, пытаемся определить его форму
+            # If not a tensor but a list, try to determine its shape
             if isinstance(gpt_cond_latent, list):
                 if isinstance(gpt_cond_latent[0], list):
                     if isinstance(gpt_cond_latent[0][0], list):
@@ -81,32 +84,32 @@ class VoiceStorage:
             else:
                 raise ValueError("gpt_cond_latent must be a tensor or a list")
         
-        # Обрабатываем speaker_embedding
+        # Process speaker_embedding
         if hasattr(speaker_embedding, "cpu"):
             speaker_embedding_data = speaker_embedding.cpu().squeeze().tolist()
         else:
             speaker_embedding_data = speaker_embedding
         
-        # Создаем файл для голоса
+        # Create voice file
         voice_file = self.storage_dir / f"{voice_id}.json"
         voice_data = {
             "gpt_cond_latent": gpt_cond_latent_data,
-            "gpt_cond_latent_shape": tensor_shape,  # Сохраняем форму тензора
+            "gpt_cond_latent_shape": tensor_shape,  # Save tensor shape
             "speaker_embedding": speaker_embedding_data
         }
         
         with open(voice_file, "w") as f:
             json.dump(voice_data, f)
         
-        # Обновляем метаданные
+        # Update metadata
         self.metadata[voice_id] = {
             "name": name or voice_id,
             "description": description,
             "created_at": time.time(),
-            "tensor_shape": tensor_shape  # Сохраняем форму тензора в метаданных
+            "tensor_shape": tensor_shape  # Save tensor shape in metadata
         }
         
-        # Сохраняем обновленные метаданные
+        # Save updated metadata
         with open(self.metadata_file, "w") as f:
             json.dump(self.metadata, f)
         
@@ -114,13 +117,13 @@ class VoiceStorage:
     
     def get_voice(self, voice_id: str) -> Optional[Dict[str, Any]]:
         """
-        Получает голос из хранилища и восстанавливает правильную форму тензоров
+        Get voice from storage and restore correct tensor shapes
         
         Args:
-            voice_id: Идентификатор голоса
+            voice_id: Voice identifier
             
         Returns:
-            Данные голоса или None, если голос не найден
+            Voice data or None if voice not found
         """
         voice_file = self.storage_dir / f"{voice_id}.json"
         
@@ -210,3 +213,8 @@ class VoiceStorage:
         """
         voice_file = self.storage_dir / f"{voice_id}.json"
         return voice_file.exists() and voice_id in self.metadata
+
+    def _save_metadata(self) -> None:
+        """Save metadata to file"""
+        with open(self.metadata_file, "w") as f:
+            json.dump(self.metadata, f, indent=2)

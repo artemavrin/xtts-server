@@ -14,13 +14,13 @@ from config import (
 
 def postprocess(wav: Union[torch.Tensor, List[torch.Tensor]]) -> np.ndarray:
     """
-    Постобработка выходной волновой формы
+    Post-process output waveform
     
     Args:
-        wav: Тензор или список тензоров с аудиоданными
+        wav: Tensor or list of tensors with audio data
         
     Returns:
-        Обработанные аудиоданные как numpy-массив
+        Processed audio data as numpy array
     """
     if isinstance(wav, list):
         wav = torch.cat(wav, dim=0)
@@ -38,17 +38,17 @@ def encode_audio_common(
     channels: int = CHANNELS
 ) -> Union[str, bytes]:
     """
-    Кодирует аудиоданные в формат WAV и опционально в base64
+    Encodes audio data to WAV format and optionally to base64
     
     Args:
-        frame_input: Входные аудиоданные в байтах
-        encode_base64: Флаг для кодирования результата в base64
-        sample_rate: Частота дискретизации
-        sample_width: Глубина сэмпла в байтах
-        channels: Количество каналов
+        frame_input: Input audio data in bytes
+        encode_base64: Flag for encoding result to base64
+        sample_rate: Sampling rate
+        sample_width: Sample depth in bytes
+        channels: Number of channels
         
     Returns:
-        Закодированные аудиоданные (строка base64 или байты)
+        Encoded audio data (base64 string or bytes)
     """
     wav_buf = io.BytesIO()
     with wave.open(wav_buf, "wb") as vfout:
@@ -66,14 +66,14 @@ def encode_audio_common(
 
 def generate_silence(duration_ms: int = 100, sample_rate: int = SAMPLE_RATE) -> bytes:
     """
-    Генерирует аудио-тишину заданной длительности
+    Generates audio silence of specified duration
     
     Args:
-        duration_ms: Длительность в миллисекундах
-        sample_rate: Частота дискретизации
+        duration_ms: Duration in milliseconds
+        sample_rate: Sampling rate
         
     Returns:
-        Аудиоданные тишины в байтах
+        Silence audio data in bytes
     """
     num_samples = int(duration_ms * sample_rate / 1000)
     silence = np.zeros(num_samples, dtype=np.int16)
@@ -81,28 +81,28 @@ def generate_silence(duration_ms: int = 100, sample_rate: int = SAMPLE_RATE) -> 
 
 def preprocess_text(text: str, max_chunk_length: int = MAX_TEXT_CHUNK_SIZE) -> List[str]:
     """
-    Предобработка текста для более эффективной потоковой передачи
+    Preprocess text for more efficient streaming
     
-    Разделение длинных параграфов на меньшие, управляемые фрагменты, которые
-    могут быть более эффективно обработаны TTS-моделью.
+    Splits long paragraphs into smaller, manageable chunks that
+    can be more efficiently processed by the TTS model.
     
     Args:
-        text: Исходный текст
-        max_chunk_length: Максимальная длина текстового фрагмента
+        text: Source text
+        max_chunk_length: Maximum text chunk length
         
     Returns:
-        Список текстовых фрагментов
+        List of text chunks
     """
-    # Разделение текста по границам предложений
+    # Split text by sentence boundaries
     import re
     sentences = re.split(r'(?<=[.!?])\s+', text)
     
-    # Группировка предложений в фрагменты разумного размера
+    # Group sentences into reasonably sized chunks
     chunks = []
     current_chunk = ""
     
     for sentence in sentences:
-        # Если добавление этого предложения сделает фрагмент слишком длинным, начинаем новый фрагмент
+        # If adding this sentence would make the chunk too long, start a new chunk
         if len(current_chunk) + len(sentence) > max_chunk_length:
             if current_chunk:
                 chunks.append(current_chunk)
@@ -113,7 +113,7 @@ def preprocess_text(text: str, max_chunk_length: int = MAX_TEXT_CHUNK_SIZE) -> L
             else:
                 current_chunk = sentence
     
-    # Добавляем последний фрагмент, если он не пустой
+    # Add the last chunk if it's not empty
     if current_chunk:
         chunks.append(current_chunk)
         
@@ -121,27 +121,27 @@ def preprocess_text(text: str, max_chunk_length: int = MAX_TEXT_CHUNK_SIZE) -> L
 
 def ensure_tensor_dimensions(tensor: Union[torch.Tensor, List]) -> torch.Tensor:
     """
-    Проверяет и исправляет размерность тензора для совместимости с моделью XTTS
+    Checks and fixes tensor dimensions for compatibility with XTTS model
     
-    GPT-кондиционирующий латентный тензор должен иметь размерность [1, n, d],
-    где n - количество векторов, d - размер каждого вектора.
+    GPT-conditioning latent tensor should have dimensions [1, n, d],
+    where n is the number of vectors, d is the size of each vector.
     
     Args:
-        tensor: Входной тензор или список
+        tensor: Input tensor or list
         
     Returns:
-        Тензор с правильной размерностью
+        Tensor with correct dimensions
     """
     from config import device
     
-    # Проверяем, является ли входной объект тензором
+    # Check if input is a tensor
     if not isinstance(tensor, torch.Tensor):
         tensor = torch.tensor(tensor).to(device)
     
-    # Получаем текущую размерность тензора
+    # Get current tensor dimensions
     dims = tensor.dim()
     
-    # Исправляем размерность, если необходимо
+    # Fix dimensions if necessary
     if dims == 1:
         # [d] -> [1, 1, d]
         return tensor.unsqueeze(0).unsqueeze(0)
@@ -149,25 +149,25 @@ def ensure_tensor_dimensions(tensor: Union[torch.Tensor, List]) -> torch.Tensor:
         # [n, d] -> [1, n, d]
         return tensor.unsqueeze(0)
     elif dims == 3:
-        # [1, n, d] - правильная размерность
+        # [1, n, d] - correct dimension
         return tensor
     else:
-        # Неожиданная размерность
+        # Unexpected dimension
         print(f"Warning: Unexpected tensor dimensions: {tensor.size()}", flush=True)
-        # Пытаемся исправить, если возможно
+        # Try to fix if possible
         if dims > 3:
             return tensor.squeeze(0) if tensor.size(0) == 1 else tensor[:1]
         return tensor
 
 def ensure_speaker_embedding_dimensions(speaker_embedding: torch.Tensor) -> torch.Tensor:
     """
-    Исправляет размерность speaker_embedding для использования в модели
+    Fixes speaker_embedding dimensions for use in the model
     
     Args:
-        speaker_embedding: Тензор с вложением голоса
+        speaker_embedding: Voice embedding tensor
         
     Returns:
-        Тензор с правильной размерностью [1, 512]
+        Tensor with correct dimensions [1, 512]
     """
     if speaker_embedding.dim() == 1:
         return speaker_embedding.unsqueeze(0)  # [512] -> [1, 512]
@@ -175,13 +175,13 @@ def ensure_speaker_embedding_dimensions(speaker_embedding: torch.Tensor) -> torc
 
 def normalize_audio(audio: np.ndarray) -> np.ndarray:
     """
-    Нормализует аудиоданные к диапазону [-1, 1]
+    Normalizes audio data to range [-1, 1]
     
     Args:
-        audio: Аудиоданные как numpy-массив
+        audio: Audio data as numpy array
         
     Returns:
-        Нормализованные аудиоданные
+        Normalized audio data
     """
     return audio / np.max(np.abs(audio))
 
@@ -191,70 +191,70 @@ def resample_audio(
     target_rate: int = SAMPLE_RATE
 ) -> np.ndarray:
     """
-    Передискретизирует аудиоданные до целевой частоты дискретизации
+    Resamples audio data to target sampling rate
     
     Args:
-        audio: Аудиоданные как numpy-массив
-        original_rate: Исходная частота дискретизации
-        target_rate: Целевая частота дискретизации
+        audio: Audio data as numpy array
+        original_rate: Original sampling rate
+        target_rate: Target sampling rate
         
     Returns:
-        Передискретизированные аудиоданные
+        Resampled audio data
     """
     if original_rate == target_rate:
         return audio
     
-    # Вычисляем коэффициент передискретизации
+    # Calculate resampling ratio
     ratio = target_rate / original_rate
     
-    # Вычисляем новую длину
+    # Calculate new length
     new_length = int(len(audio) * ratio)
     
-    # Создаем временную шкалу для интерполяции
+    # Create time scale for interpolation
     old_indices = np.arange(len(audio))
     new_indices = np.linspace(0, len(audio) - 1, new_length)
     
-    # Линейная интерполяция
+    # Linear interpolation
     return np.interp(new_indices, old_indices, audio)
 
 def mix_audio(audio1: np.ndarray, audio2: np.ndarray, ratio: float = 0.5) -> np.ndarray:
     """
-    Смешивает два аудиосигнала с заданным соотношением
+    Mixes two audio signals with given ratio
     
     Args:
-        audio1: Первый аудиосигнал
-        audio2: Второй аудиосигнал
-        ratio: Соотношение смешивания (0.0 - только audio1, 1.0 - только audio2)
+        audio1: First audio signal
+        audio2: Second audio signal
+        ratio: Mixing ratio (0.0 - only audio1, 1.0 - only audio2)
         
     Returns:
-        Смешанный аудиосигнал
+        Mixed audio signal
     """
-    # Нормализуем сигналы
+    # Normalize signals
     audio1 = normalize_audio(audio1)
     audio2 = normalize_audio(audio2)
     
-    # Смешиваем с заданным соотношением
+    # Mix with given ratio
     mixed = audio1 * (1 - ratio) + audio2 * ratio
     
-    # Нормализуем результат
+    # Normalize result
     return normalize_audio(mixed)
 
 def apply_fade(audio: np.ndarray, fade_length: int = 100) -> np.ndarray:
     """
-    Применяет плавное затухание к началу и концу аудиосигнала
+    Applies smooth fade to the beginning and end of audio signal
     
     Args:
-        audio: Аудиосигнал
-        fade_length: Длина затухания в сэмплах
+        audio: Audio signal
+        fade_length: Fade length in samples
         
     Returns:
-        Аудиосигнал с примененным затуханием
+        Audio signal with applied fade
     """
-    # Создаем маску затухания
+    # Create fade mask
     fade_in = np.linspace(0, 1, fade_length)
     fade_out = np.linspace(1, 0, fade_length)
     
-    # Применяем затухание
+    # Apply fade
     audio[:fade_length] *= fade_in
     audio[-fade_length:] *= fade_out
     
