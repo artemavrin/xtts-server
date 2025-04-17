@@ -4,16 +4,78 @@ import hashlib
 import os
 import tempfile
 import torch
+import numpy as np
+import re
 from typing import Dict, Any, List, Optional, Tuple, Union, Callable
 from fastapi import UploadFile, HTTPException
 
 from models.voice_storage import VoiceStorage
 from services.cache import SpeakerCache
-from services.audio import ensure_tensor_dimensions
-from config import device
+from services.audio import ensure_tensor_dimensions, ensure_speaker_embedding_dimensions
+from config import (
+    device,
+    MAX_TEXT_CHUNK_SIZE,
+    MIN_TEXT_CHUNK_SIZE,
+    SAMPLE_RATE,
+    SAMPLE_WIDTH,
+    CHANNELS
+)
 
 # Глобальный словарь для отслеживания активных сессий
 active_sessions: Dict[str, Dict[str, Any]] = {}
+
+def preprocess_text(text: str) -> List[str]:
+    """
+    Предобработка текста для более эффективной потоковой передачи
+    
+    Разделение длинных параграфов на меньшие, управляемые фрагменты, которые
+    могут быть более эффективно обработаны TTS-моделью.
+    
+    Args:
+        text: Исходный текст
+        
+    Returns:
+        Список текстовых фрагментов
+    """
+    # Разделение текста по границам предложений
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    # Группировка предложений в фрагменты разумного размера
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        # Если добавление этого предложения сделает фрагмент слишком длинным, начинаем новый фрагмент
+        if len(current_chunk) + len(sentence) > MAX_TEXT_CHUNK_SIZE:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = sentence
+        else:
+            if current_chunk:
+                current_chunk += " " + sentence
+            else:
+                current_chunk = sentence
+    
+    # Добавляем последний фрагмент, если он не пустой
+    if current_chunk:
+        chunks.append(current_chunk)
+        
+    return chunks
+
+def generate_silence(duration_ms: int = 100, sample_rate: int = SAMPLE_RATE) -> bytes:
+    """
+    Генерирует данные тишины для более быстрого начального ответа
+    
+    Args:
+        duration_ms: Длительность тишины в миллисекундах
+        sample_rate: Частота дискретизации
+        
+    Returns:
+        Байты аудио-данных тишины
+    """
+    num_samples = int(duration_ms * sample_rate / 1000)
+    silence = np.zeros(num_samples, dtype=np.int16)
+    return silence.tobytes()
 
 async def _cleanup_session(sid: str, delay: int = 60) -> None:
     """
@@ -62,145 +124,63 @@ async def get_speaker_data(
     Raises:
         HTTPException: Если голос не найден или произошла ошибка при обработке
     """
-    # 1. Если указан speaker_id, сначала проверяем кэш
-    if speaker_id:
+    try:
         # Проверяем кэш
-        cache_key = f"speaker_id:{speaker_id}"
-        cached_data = speaker_cache.get(cache_key)
-        if cached_data:
-            gpt_cond_latent, speaker_embedding = cached_data
-            # Проверяем и исправляем размерность gpt_cond_latent
-            gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
-            return gpt_cond_latent, speaker_embedding
+        if speaker_id:
+            cached_data = speaker_cache.get(speaker_id)
+            if cached_data is not None:
+                print(f"Using cached voice data for speaker_id: {speaker_id}", flush=True)
+                return cached_data
         
-        # 2. Если в кэше нет, проверяем сохраненные голоса
-        if voice_storage is not None:
-            saved_voice = voice_storage.get_voice(speaker_id)
-            if saved_voice:
-                # Преобразуем данные из JSON в тензоры
-                gpt_cond_latent = torch.tensor(saved_voice["gpt_cond_latent"]).to(device)
-                speaker_embedding = torch.tensor(saved_voice["speaker_embedding"]).to(device)
+        # Получаем данные голоса
+        if speaker_id:
+            if voice_storage and voice_storage.has_voice(speaker_id):
+                print(f"Loading voice data from storage for speaker_id: {speaker_id}", flush=True)
+                voice_data = voice_storage.get_voice(speaker_id)
+                if voice_data is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Voice data not found for speaker_id: {speaker_id}"
+                    )
+                # Преобразуем данные в тензоры с правильным dtype
+                gpt_cond_latent = torch.tensor(voice_data["gpt_cond_latent"], dtype=torch.float).to(model.device)
+                speaker_embedding = torch.tensor(voice_data["speaker_embedding"], dtype=torch.float).to(model.device)
                 
-                # Если есть информация о форме тензора, используем её
-                if "gpt_cond_latent_shape" in saved_voice:
-                    tensor_shape = saved_voice["gpt_cond_latent_shape"]
-                    gpt_cond_latent = gpt_cond_latent.reshape(*tensor_shape)
-                
-                # Проверяем и исправляем размерность gpt_cond_latent
-                gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
-                
-                # Обновляем кэш для будущих запросов
-                speaker_cache.set(cache_key, (gpt_cond_latent, speaker_embedding))
-                
-                return gpt_cond_latent, speaker_embedding
-        
-        # 3. Проверяем встроенные голоса модели
-        if hasattr(model, "speaker_manager") and hasattr(model.speaker_manager, "speakers") and speaker_id in model.speaker_manager.speakers:
-            speaker_data = model.speaker_manager.speakers[speaker_id]
-            gpt_cond_latent = speaker_data["gpt_cond_latent"]
-            speaker_embedding = speaker_data["speaker_embedding"]
-            
-            # Проверяем и исправляем размерность gpt_cond_latent
-            gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
-            
-            result = (gpt_cond_latent, speaker_embedding)
-            # Обновляем кэш для будущих запросов
-            speaker_cache.set(cache_key, result)
-            
-            return result
-        
-        # Если голос не найден ни в одном из источников
-        raise HTTPException(
-            status_code=404, detail=f"Speaker ID {speaker_id} not found in cache, saved voices, or model"
-        )
-
-    # 4. Для загруженного аудио-файла (UploadFile) через API
-    elif audio_file:
-        try:
-            # Создаем временный файл для сохранения загруженного аудио
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_path = temp_file.name
-                # Читаем и записываем содержимое во временный файл
-                content = await audio_file.read()
-                temp_file.write(content)
-            
-            # Создаем хеш содержимого для кэширования
-            file_hash = hashlib.md5(content).hexdigest()
-            cache_key = f"file:{file_hash}"
-            
-            # Проверяем кэш
-            cached_data = speaker_cache.get(cache_key)
-            if cached_data:
-                # Удаляем временный файл, если данные уже в кэше
-                os.unlink(temp_path)
-                gpt_cond_latent, speaker_embedding = cached_data
-                # Проверяем и исправляем размерность gpt_cond_latent
-                gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
-                return gpt_cond_latent, speaker_embedding
-                
-            # Если нет в кэше, обрабатываем файл
-            with torch.inference_mode():
-                gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(
-                    temp_path)
-            
-            # Удаляем временный файл после обработки
-            os.unlink(temp_path)
-            
-            # Проверяем и исправляем размерность gpt_cond_latent
-            gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
-            
-            # Сохраняем результат в кэш
-            result = (gpt_cond_latent, speaker_embedding)
-            speaker_cache.set(cache_key, result)
-            
-            return result
-            
-        except Exception as e:
-            # В случае ошибки убеждаемся, что временный файл удален
-            if 'temp_path' in locals() and os.path.exists(temp_path):
-                os.unlink(temp_path)
+                # Восстанавливаем форму тензора gpt_cond_latent
+                if "gpt_cond_latent_shape" in voice_data:
+                    gpt_cond_latent = gpt_cond_latent.reshape(*voice_data["gpt_cond_latent_shape"])
+            else:
+                print(f"Using built-in voice for speaker_id: {speaker_id}", flush=True)
+                gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(audio_path=speaker_id)
+        elif audio_file or audio_file_path:
+            audio_path = audio_file_path if audio_file_path else await save_upload_file(audio_file)
+            print(f"Generating voice data from audio file: {audio_path}", flush=True)
+            gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(audio_path=audio_path)
+        else:
             raise HTTPException(
-                status_code=400, detail=f"Error processing audio file: {str(e)}")
-
-    # 5. Для аудиофайлов по пути на сервере
-    elif audio_file_path and os.path.exists(audio_file_path):
-        try:
-            # Создаем хеш файла для кэширования
-            file_hash = None
-            with open(audio_file_path, "rb") as f:
-                file_hash = hashlib.md5(f.read()).hexdigest()
-            
-            cache_key = f"file:{file_hash}"
-            
-            # Проверяем кэш
-            cached_data = speaker_cache.get(cache_key)
-            if cached_data:
-                gpt_cond_latent, speaker_embedding = cached_data
-                # Проверяем и исправляем размерность gpt_cond_latent
-                gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
-                return gpt_cond_latent, speaker_embedding
-                
-            # Если нет в кэше, обрабатываем файл
-            with torch.inference_mode():
-                gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(
-                    audio_file_path)
-            
-            # Проверяем и исправляем размерность gpt_cond_latent
-            gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
-            
-            # Сохраняем результат в кэш
-            result = (gpt_cond_latent, speaker_embedding)
-            speaker_cache.set(cache_key, result)
-            
-            return result
-        except Exception as e:
-            raise HTTPException(
-                status_code=400, detail=f"Error processing audio file: {str(e)}")
-
-    else:
+                status_code=400,
+                detail="Either speaker_id or audio_file must be provided"
+            )
+        
+        # Исправляем размерность speaker_embedding (гарантирует минимум 2D: [1, 512])
+        speaker_embedding = ensure_speaker_embedding_dimensions(speaker_embedding)
+        
+        # Добавляем последнюю размерность, ТОЛЬКО если она отсутствует (для Conv1d)
+        if speaker_embedding.dim() == 2:
+            speaker_embedding = speaker_embedding.unsqueeze(-1) # [1, 512] -> [1, 512, 1]
+        # Если уже 3D ([1, 512, 1]), ничего не делаем
+        
+        # Кэшируем результат (с формой [1, 512, 1])
+        if speaker_id:
+            speaker_cache.set(speaker_id, (gpt_cond_latent, speaker_embedding))
+        
+        return gpt_cond_latent, speaker_embedding
+        
+    except Exception as e:
+        print(f"Error in get_speaker_data: {str(e)}", flush=True)
         raise HTTPException(
-            status_code=400,
-            detail="No speaker provided. Please provide either a speaker_id, upload an audio file, or specify a valid audio_file_path."
+            status_code=500,
+            detail=f"Error processing voice data: {str(e)}"
         )
 
 async def make_async_generator(sync_generator):
@@ -306,3 +286,30 @@ async def preload_voices_to_cache(
             print(f"Error preloading voice {voice_id}: {str(e)}", flush=True)
     
     print(f"Preloaded {loaded_count}/{len(voices_to_preload)} voices to cache.", flush=True)
+
+async def save_upload_file(upload_file: UploadFile) -> str:
+    """
+    Сохраняет загруженный файл во временную директорию
+    
+    Args:
+        upload_file: Загруженный файл
+        
+    Returns:
+        Путь к сохраненному файлу
+    """
+    try:
+        # Создаем временный файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            temp_path = temp_file.name
+            
+            # Читаем и записываем содержимое файла
+            content = await upload_file.read()
+            temp_file.write(content)
+            
+            return temp_path
+    except Exception as e:
+        print(f"Error saving upload file: {str(e)}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error saving upload file: {str(e)}"
+        )

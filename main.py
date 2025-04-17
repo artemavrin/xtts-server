@@ -1,8 +1,11 @@
 import asyncio
 import traceback
+import torch
+import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from transformers import GenerationConfig
 
 from config import (
     MAX_CONCURRENT_REQUESTS, VOICES_DIR, SPEAKER_CACHE_TTL, 
@@ -13,6 +16,52 @@ from models.voice_storage import VoiceStorage
 from services.cache import SpeakerCache
 from services.utils import preload_voices_to_cache
 from api.routes import router
+
+# Оптимизированные параметры генерации для более быстрого вывода
+OPTIMIZED_GENERATION_CONFIG = GenerationConfig(
+    do_sample=False,
+    num_beams=1,
+    do_stream=True,
+    temperature=1.0,  # Более низкая температура для более быстрых, детерминированных выводов
+    repetition_penalty=1.0  # Стандартное значение, регулируйте при необходимости
+)
+
+# Настройка многопоточности и устройства
+torch.set_num_threads(int(os.environ.get("NUM_THREADS", os.cpu_count())))
+device = torch.device("cuda" if os.environ.get(
+    "USE_CPU", "0") == "0" and torch.cuda.is_available() else "cpu")
+
+# Функция для применения оптимизаций в зависимости от доступного оборудования
+def configure_model_optimizations():
+    """Применяем оптимизации производительности в зависимости от доступного оборудования"""
+    if device.type == "cuda":
+        # Оптимизации для GPU
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        if hasattr(torch.backends.cudnn, "allow_tf32"):
+            torch.backends.cudnn.allow_tf32 = True
+        
+        # Если у вас достаточно видеопамяти, используйте эти настройки:
+        if torch.cuda.get_device_properties(0).total_memory > 8 * 1024 * 1024 * 1024:  # > 8GB
+            return {
+                "use_fp16": True,
+                "batch_size": 2,  # Можно увеличить в зависимости от объема видеопамяти
+            }
+        else:
+            return {
+                "use_fp16": True,
+                "batch_size": 1,
+            }
+    else:
+        # Оптимизации для CPU
+        torch.set_num_threads(int(os.environ.get("NUM_THREADS", os.cpu_count())))
+        return {
+            "use_fp16": False,
+            "batch_size": 1,
+        }
+
+# Применяем оптимизации
+model_opts = configure_model_optimizations()
 
 # Инициализация приложения
 app = FastAPI(
@@ -43,11 +92,20 @@ async def global_exception_handler(request: Request, exc: Exception):
     print(f"Global exception handler caught: {str(exc)}", flush=True)
     print(f"Exception traceback: {traceback.format_exc()}", flush=True)
     
+    # Более детальная обработка ошибок
+    error_detail = str(exc)
+    if "Error processing audio file" in error_detail:
+        status_code = 400
+    elif "Speaker ID not found" in error_detail:
+        status_code = 404
+    else:
+        status_code = 500
+    
     return JSONResponse(
-        status_code=500,
+        status_code=status_code,
         content={
             "error": True,
-            "detail": str(exc),
+            "detail": error_detail,
             "type": exc.__class__.__name__
         }
     )
@@ -77,6 +135,8 @@ async def startup_event():
         )
         
         print("Server initialized and ready to handle requests", flush=True)
+        print(f"Using device: {device}", flush=True)
+        print(f"Model optimizations: {model_opts}", flush=True)
     except Exception as e:
         print(f"Error during startup: {str(e)}", flush=True)
         print(f"Startup error traceback: {traceback.format_exc()}", flush=True)

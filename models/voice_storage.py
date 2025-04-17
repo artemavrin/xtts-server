@@ -61,7 +61,7 @@ class VoiceStorage:
             tensor_shape = list(gpt_cond_latent_cpu.shape)
             
             # Сохраняем данные как плоский список
-            gpt_cond_latent_data = gpt_cond_latent_cpu.reshape(-1).half().tolist()
+            gpt_cond_latent_data = gpt_cond_latent_cpu.reshape(-1).tolist()
         else:
             # Если это не тензор, а список, пытаемся определить его форму
             if isinstance(gpt_cond_latent, list):
@@ -83,7 +83,7 @@ class VoiceStorage:
         
         # Обрабатываем speaker_embedding
         if hasattr(speaker_embedding, "cpu"):
-            speaker_embedding_data = speaker_embedding.cpu().squeeze().half().tolist()
+            speaker_embedding_data = speaker_embedding.cpu().squeeze().tolist()
         else:
             speaker_embedding_data = speaker_embedding
         
@@ -197,3 +197,16 @@ class VoiceStorage:
             return True
         
         return False
+    
+    def has_voice(self, voice_id: str) -> bool:
+        """
+        Проверяет наличие голоса в хранилище
+        
+        Args:
+            voice_id: Идентификатор голоса
+            
+        Returns:
+            True если голос существует, False если нет
+        """
+        voice_file = self.storage_dir / f"{voice_id}.json"
+        return voice_file.exists() and voice_id in self.metadata

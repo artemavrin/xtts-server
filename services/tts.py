@@ -9,10 +9,31 @@ from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
 from TTS.utils.generic_utils import get_user_data_dir
 from TTS.utils.manage import ModelManager
+from transformers import GenerationConfig
 
-from config import device, CUSTOM_MODEL_PATH, OPTIMIZED_GENERATION_CONFIG, configure_model_optimizations
-from services.audio import postprocess, generate_silence, encode_audio_common, preprocess_text
+from config import device, CUSTOM_MODEL_PATH, configure_model_optimizations
+from services.audio import (
+    postprocess,
+    generate_silence,
+    encode_audio_common,
+    preprocess_text,
+    normalize_audio,
+    resample_audio,
+    mix_audio,
+    apply_fade
+)
 from services.utils import active_sessions, _cleanup_session
+
+# Оптимизированные параметры генерации для более быстрого вывода
+OPTIMIZED_GENERATION_CONFIG = GenerationConfig(
+    do_sample=False,
+    num_beams=1,
+    do_stream=True,
+    temperature=1.0,  # Более низкая температура для более быстрых, детерминированных выводов
+    repetition_penalty=1.0  # Стандартное значение, регулируйте при необходимости
+)
+# Добавляем XttsConfig в список безопасных глобальных объектов
+torch.serialization.add_safe_globals([XttsConfig])
 
 class TTSManager:
     """Менеджер для работы с TTS-моделью"""
@@ -50,14 +71,13 @@ class TTSManager:
         config = XttsConfig()
         config.load_json(os.path.join(model_path, "config.json"))
         model = Xtts.init_from_config(config)
-        model.load_checkpoint(config, checkpoint_dir=model_path, eval=True,
-                            use_deepspeed=True if device.type == "cuda" else False)
+        model.load_checkpoint(
+            config, 
+            checkpoint_dir=model_path, 
+            eval=True,
+            use_deepspeed=True if device.type == "cuda" else False
+        )
         model.to(device.type)
-        
-        # Применение оптимизаций к модели
-        model_opts = configure_model_optimizations()
-        if model_opts["use_fp16"] and device.type == "cuda":
-            model.half()  # Конвертация в FP16 для ускорения на GPU
         
         # Предзагрузка фонемизаторов для распространенных языков
         if hasattr(model, "phonemizer") and hasattr(model.phonemizer, "preload_languages"):
@@ -101,6 +121,9 @@ class TTSManager:
             speaker_embedding: Вложение голоса
             stream_chunk_size: Размер фрагмента потока
             add_wav_header: Добавлять ли WAV-заголовок
+            normalize: Нормализовать ли аудио
+            target_sample_rate: Целевая частота дискретизации
+            apply_fade_in_out: Применять ли эффект затухания в начале и конце
             
         Yields:
             Аудио-фрагменты в байтах
@@ -122,10 +145,17 @@ class TTSManager:
             # Получаем семафор только для настройки вывода модели
             async with self.semaphore:
                 # Проверяем и логируем размерность тензоров перед инференсом
-                print(f"[{session_id}] gpt_cond_latent dimensions: {gpt_cond_latent.dim()}, "
-                     f"shape: {list(gpt_cond_latent.shape)}", flush=True)
+                #print(f"[{session_id}] gpt_cond_latent dimensions: {gpt_cond_latent.dim()}, "f"shape: {list(gpt_cond_latent.shape)}", flush=True)
                 
-                # Настраиваем генератор потока
+                # Отладочная печать атрибутов config (можно оставить для проверки)
+                #print(f"[{session_id}] Global config attributes before inference: {vars(OPTIMIZED_GENERATION_CONFIG)}", flush=True)
+                
+                # Очищаем кэш модели перед генерацией (оставляем, если нужно)
+                if hasattr(self.model, "clear_cache"):
+                    self.model.clear_cache()
+                    print(f"[{session_id}] Model cache cleared", flush=True)
+                
+                # Настраиваем генератор потока с глобальной конфигурацией
                 chunks_generator = self.model.inference_stream(
                     text,
                     language,
@@ -133,7 +163,7 @@ class TTSManager:
                     speaker_embedding,
                     stream_chunk_size=stream_chunk_size,
                     enable_text_splitting=True,
-                    generation_config=OPTIMIZED_GENERATION_CONFIG
+                    generation_config=OPTIMIZED_GENERATION_CONFIG # <-- Передаем глобальную
                 )
                 print(f"[{session_id}] Inference stream initialized", flush=True)
             
@@ -141,8 +171,10 @@ class TTSManager:
             audio_chunk_count = 0
             for i, chunk in enumerate(chunks_generator):
                 audio_chunk_count += 1
+                
+                # Применяем обработку аудио
                 chunk = postprocess(chunk)
-
+                
                 if i == 0 and add_wav_header:
                     yield encode_audio_common(b"", encode_base64=False)
                     yield chunk.tobytes()
@@ -177,120 +209,18 @@ class TTSManager:
             # Если ошибка связана с размерностью тензоров, логируем их формы
             if "dimensions" in str(e) and "gpt_cond_latent" in locals():
                 print(f"[{session_id}] Error with tensor dimensions. "
-                     f"gpt_cond_latent shape: {gpt_cond_latent.shape}, "
-                     f"dimensions: {gpt_cond_latent.dim()}", flush=True)
+                     f"gpt_cond_latent shape: {list(gpt_cond_latent.shape)}, "
+                     f"speaker_embedding shape: {list(speaker_embedding.shape)}", flush=True)
             
-            raise
-        finally:
-            # Планируем очистку
-            asyncio.create_task(_cleanup_session(session_id))
-    
-    async def process_text_in_chunks(
-        self, 
-        session_id: str, 
-        text: str, 
-        language: str, 
-        gpt_cond_latent: torch.Tensor, 
-        speaker_embedding: torch.Tensor, 
-        stream_chunk_size: int = 20, 
-        add_wav_header: bool = True
-    ) -> AsyncGenerator[bytes, None]:
-        """
-        Обрабатывает длинный текст по частям для более эффективного синтеза
+            # Очищаем кэш модели при ошибке
+            if hasattr(self.model, "clear_cache"):
+                self.model.clear_cache()
+                print(f"[{session_id}] Model cache cleared after error", flush=True)
+            
+            raise HTTPException(status_code=500, detail=str(e))
         
-        Args:
-            session_id: ID сессии
-            text: Текст для синтеза
-            language: Код языка
-            gpt_cond_latent: Латентное представление голоса
-            speaker_embedding: Вложение голоса
-            stream_chunk_size: Размер фрагмента потока
-            add_wav_header: Добавлять ли WAV-заголовок
-            
-        Yields:
-            Аудио-фрагменты в байтах
-        """
-        if not self.model_loaded:
-            raise RuntimeError("TTS model is not loaded")
-        
-        try:
-            # Сохраняем информацию о сессии
-            active_sessions[session_id] = {
-                "status": "processing",
-                "text": text,
-                "language": language,
-                "created_at": asyncio.get_event_loop().time()
-            }
-            
-            # Предварительно обрабатываем текст для более быстрой генерации
-            text_chunks = preprocess_text(text)
-            print(f"[{session_id}] Text preprocessed into {len(text_chunks)} chunks", flush=True)
-            
-            # Отправляем WAV-заголовок в начале
-            if add_wav_header:
-                yield encode_audio_common(b"", encode_base64=False)
-                yield generate_silence(50)  # 50мс тишины для установления соединения
-            
-            # Обрабатываем фрагменты с минимальной задержкой между ними
-            for chunk_idx, chunk_text in enumerate(text_chunks):
-                print(f"[{session_id}] Processing chunk {chunk_idx+1}/{len(text_chunks)}: '{chunk_text[:30]}...'", flush=True)
-                
-                # Получаем семафор только для настройки генерации
-                async with self.semaphore:
-                    print(f"[{session_id}] Semaphore acquired for chunk {chunk_idx+1}", flush=True)
-                    
-                    # Проверяем и логируем размерность тензоров перед инференсом
-                    print(f"[{session_id}] gpt_cond_latent dimensions: {gpt_cond_latent.dim()}, "
-                         f"shape: {list(gpt_cond_latent.shape)}", flush=True)
-                    
-                    chunks_generator = self.model.inference_stream(
-                        chunk_text,
-                        language,
-                        gpt_cond_latent,
-                        speaker_embedding,
-                        stream_chunk_size=stream_chunk_size,
-                        enable_text_splitting=True,
-                        generation_config=OPTIMIZED_GENERATION_CONFIG
-                    )
-                    print(f"[{session_id}] Inference stream initialized for chunk {chunk_idx+1}", flush=True)
-                
-                # Обрабатываем сгенерированные аудио-фрагменты
-                audio_chunk_count = 0
-                for audio_chunk in chunks_generator:
-                    audio_chunk_count += 1
-                    
-                    # Проверяем на отмену
-                    if session_id in active_sessions and active_sessions[session_id]["status"] == "canceled":
-                        print(f"[{session_id}] Stream canceled", flush=True)
-                        return
-                    
-                    # Обрабатываем и выдаем аудио
-                    processed_chunk = postprocess(audio_chunk)
-                    yield processed_chunk.tobytes()
-                    
-                    # Периодически логируем прогресс
-                    if audio_chunk_count % 10 == 0:
-                        print(f"[{session_id}] Processed {audio_chunk_count} audio chunks for text chunk {chunk_idx+1}", flush=True)
-                
-                print(f"[{session_id}] Completed chunk {chunk_idx+1}, generated {audio_chunk_count} audio chunks", flush=True)
-            
-            # Обновляем статус сессии по завершении
-            if session_id in active_sessions:
-                active_sessions[session_id]["status"] = "completed"
-                print(f"[{session_id}] Stream completed successfully", flush=True)
-                
-        except Exception as e:
-            # Обрабатываем ошибки
-            if session_id in active_sessions:
-                active_sessions[session_id]["status"] = "error"
-                active_sessions[session_id]["error"] = str(e)
-            
-            # Подробное логирование ошибки
-            print(f"[{session_id}] Error in process_text_in_chunks: {str(e)}", flush=True)
-            print(f"[{session_id}] Error traceback: {traceback.format_exc()}", flush=True)
-            raise
         finally:
-            # Планируем очистку
+            # Очищаем сессию
             asyncio.create_task(_cleanup_session(session_id))
     
     async def synthesize_full(
@@ -323,6 +253,7 @@ class TTSManager:
                     language,
                     gpt_cond_latent,
                     speaker_embedding,
+                    generation_config=OPTIMIZED_GENERATION_CONFIG
                 )
 
                 wav = postprocess(torch.tensor(out["wav"]))

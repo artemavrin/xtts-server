@@ -4,6 +4,13 @@ import base64
 import numpy as np
 import torch
 from typing import Union, Tuple, List, Optional
+from config import (
+    SAMPLE_RATE,
+    SAMPLE_WIDTH,
+    CHANNELS,
+    MAX_TEXT_CHUNK_SIZE,
+    MIN_TEXT_CHUNK_SIZE
+)
 
 def postprocess(wav: Union[torch.Tensor, List[torch.Tensor]]) -> np.ndarray:
     """
@@ -26,9 +33,9 @@ def postprocess(wav: Union[torch.Tensor, List[torch.Tensor]]) -> np.ndarray:
 def encode_audio_common(
     frame_input: bytes, 
     encode_base64: bool = True, 
-    sample_rate: int = 24000, 
-    sample_width: int = 2, 
-    channels: int = 1
+    sample_rate: int = SAMPLE_RATE, 
+    sample_width: int = SAMPLE_WIDTH, 
+    channels: int = CHANNELS
 ) -> Union[str, bytes]:
     """
     Кодирует аудиоданные в формат WAV и опционально в base64
@@ -57,7 +64,7 @@ def encode_audio_common(
     else:
         return wav_buf.read()
 
-def generate_silence(duration_ms: int = 100, sample_rate: int = 24000) -> bytes:
+def generate_silence(duration_ms: int = 100, sample_rate: int = SAMPLE_RATE) -> bytes:
     """
     Генерирует аудио-тишину заданной длительности
     
@@ -72,7 +79,7 @@ def generate_silence(duration_ms: int = 100, sample_rate: int = 24000) -> bytes:
     silence = np.zeros(num_samples, dtype=np.int16)
     return silence.tobytes()
 
-def preprocess_text(text: str, max_chunk_length: int = 150) -> List[str]:
+def preprocess_text(text: str, max_chunk_length: int = MAX_TEXT_CHUNK_SIZE) -> List[str]:
     """
     Предобработка текста для более эффективной потоковой передачи
     
@@ -151,3 +158,104 @@ def ensure_tensor_dimensions(tensor: Union[torch.Tensor, List]) -> torch.Tensor:
         if dims > 3:
             return tensor.squeeze(0) if tensor.size(0) == 1 else tensor[:1]
         return tensor
+
+def ensure_speaker_embedding_dimensions(speaker_embedding: torch.Tensor) -> torch.Tensor:
+    """
+    Исправляет размерность speaker_embedding для использования в модели
+    
+    Args:
+        speaker_embedding: Тензор с вложением голоса
+        
+    Returns:
+        Тензор с правильной размерностью [1, 512]
+    """
+    if speaker_embedding.dim() == 1:
+        return speaker_embedding.unsqueeze(0)  # [512] -> [1, 512]
+    return speaker_embedding
+
+def normalize_audio(audio: np.ndarray) -> np.ndarray:
+    """
+    Нормализует аудиоданные к диапазону [-1, 1]
+    
+    Args:
+        audio: Аудиоданные как numpy-массив
+        
+    Returns:
+        Нормализованные аудиоданные
+    """
+    return audio / np.max(np.abs(audio))
+
+def resample_audio(
+    audio: np.ndarray,
+    original_rate: int,
+    target_rate: int = SAMPLE_RATE
+) -> np.ndarray:
+    """
+    Передискретизирует аудиоданные до целевой частоты дискретизации
+    
+    Args:
+        audio: Аудиоданные как numpy-массив
+        original_rate: Исходная частота дискретизации
+        target_rate: Целевая частота дискретизации
+        
+    Returns:
+        Передискретизированные аудиоданные
+    """
+    if original_rate == target_rate:
+        return audio
+    
+    # Вычисляем коэффициент передискретизации
+    ratio = target_rate / original_rate
+    
+    # Вычисляем новую длину
+    new_length = int(len(audio) * ratio)
+    
+    # Создаем временную шкалу для интерполяции
+    old_indices = np.arange(len(audio))
+    new_indices = np.linspace(0, len(audio) - 1, new_length)
+    
+    # Линейная интерполяция
+    return np.interp(new_indices, old_indices, audio)
+
+def mix_audio(audio1: np.ndarray, audio2: np.ndarray, ratio: float = 0.5) -> np.ndarray:
+    """
+    Смешивает два аудиосигнала с заданным соотношением
+    
+    Args:
+        audio1: Первый аудиосигнал
+        audio2: Второй аудиосигнал
+        ratio: Соотношение смешивания (0.0 - только audio1, 1.0 - только audio2)
+        
+    Returns:
+        Смешанный аудиосигнал
+    """
+    # Нормализуем сигналы
+    audio1 = normalize_audio(audio1)
+    audio2 = normalize_audio(audio2)
+    
+    # Смешиваем с заданным соотношением
+    mixed = audio1 * (1 - ratio) + audio2 * ratio
+    
+    # Нормализуем результат
+    return normalize_audio(mixed)
+
+def apply_fade(audio: np.ndarray, fade_length: int = 100) -> np.ndarray:
+    """
+    Применяет плавное затухание к началу и концу аудиосигнала
+    
+    Args:
+        audio: Аудиосигнал
+        fade_length: Длина затухания в сэмплах
+        
+    Returns:
+        Аудиосигнал с примененным затуханием
+    """
+    # Создаем маску затухания
+    fade_in = np.linspace(0, 1, fade_length)
+    fade_out = np.linspace(1, 0, fade_length)
+    
+    # Применяем затухание
+    audio[:fade_length] *= fade_in
+    audio[-fade_length:] *= fade_out
+    
+    return audio

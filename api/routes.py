@@ -1,14 +1,35 @@
 import torch
 import uuid
+import asyncio
 from fastapi import APIRouter, UploadFile, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
+from config import (
+    OPTIMIZED_GENERATION_CONFIG,
+    STREAM_CHUNK_SIZE,
+    ADD_WAV_HEADER,
+    MAX_TEXT_CHUNK_SIZE,
+    MIN_TEXT_CHUNK_SIZE,
+    SAMPLE_RATE,
+    SAMPLE_WIDTH,
+    CHANNELS
+)
 from models.inputs import TTSInputs, StreamingOptions, CloneVoiceOptions
 from models.voice_storage import VoiceStorage
 from services.cache import SpeakerCache
 from services.tts import TTSManager
-from services.utils import get_speaker_data, generate_session_id, active_sessions
-from services.audio import ensure_tensor_dimensions
+from services.utils import (
+    get_speaker_data,
+    generate_session_id,
+    active_sessions,
+    preprocess_text,
+    generate_silence
+)
+from services.audio import (
+    ensure_tensor_dimensions,
+    ensure_speaker_embedding_dimensions,
+    encode_audio_common
+)
 
 router = APIRouter()
 
@@ -69,11 +90,11 @@ async def tts_stream(
                 speaker_embedding = torch.tensor(request.speaker_embedding).to(tts_manager.model.device)
                 
                 # Проверяем и исправляем размерность
-                original_shape = gpt_cond_latent.shape
                 gpt_cond_latent = ensure_tensor_dimensions(gpt_cond_latent)
+                speaker_embedding = ensure_speaker_embedding_dimensions(speaker_embedding)
                 new_shape = gpt_cond_latent.shape
                 
-                print(f"[{session_id}] Voice tensor shape: {original_shape} -> {new_shape}", flush=True)
+                print(f"[{session_id}] Voice tensor shape: {gpt_cond_latent.shape} -> {new_shape}", flush=True)
             else:
                 # Получаем данные диктора из других источников
                 print(f"[{session_id}] Fetching voice data for speaker_id: {request.speaker_id}", flush=True)
@@ -89,31 +110,18 @@ async def tts_stream(
                 print(f"[{session_id}] Voice data fetched. gpt_cond_latent shape: {gpt_cond_latent.shape}, "
                      f"speaker_embedding shape: {speaker_embedding.shape}", flush=True)
             
-            # Используем процессор текста по чанкам для длинных текстов или обычный генератор для коротких
-            if len(request.text) > 150:
-                print(f"[{session_id}] Using chunked processing for long text", flush=True)
-                async for chunk in tts_manager.process_text_in_chunks(
-                    session_id,
-                    request.text,
-                    request.language,
-                    gpt_cond_latent,
-                    speaker_embedding,
-                    options.stream_chunk_size,
-                    options.add_wav_header
-                ):
-                    yield chunk
-            else:
-                print(f"[{session_id}] Using direct streaming for short text", flush=True)
-                async for chunk in tts_manager.generate_stream(
-                    session_id,
-                    request.text,
-                    request.language,
-                    gpt_cond_latent,
-                    speaker_embedding,
-                    options.stream_chunk_size,
-                    options.add_wav_header
-                ):
-                    yield chunk
+            print(f"[{session_id}] Using direct streaming for short text", flush=True)
+            async for chunk in tts_manager.generate_stream(
+                session_id,
+                request.text,
+                request.language,
+                gpt_cond_latent,
+                speaker_embedding,
+                options.stream_chunk_size,
+                options.add_wav_header
+            ):
+                yield chunk
+                
                 
         except Exception as e:
             # Обрабатываем ошибки
@@ -225,8 +233,8 @@ async def clone_speaker(
         
         # Подготавливаем данные голоса для JSON-ответа
         voice_data = {
-            "gpt_cond_latent": gpt_cond_latent.cpu().squeeze().half().tolist(),
-            "speaker_embedding": speaker_embedding.cpu().squeeze().half().tolist(),
+            "gpt_cond_latent": gpt_cond_latent.cpu().squeeze().tolist(),
+            "speaker_embedding": speaker_embedding.cpu().squeeze(-1).tolist(),
         }
         
         # Обрабатываем различные форматы ответа
@@ -411,3 +419,182 @@ async def health_check(
         "device": str(tts_manager.model.device if tts_manager.model_loaded else "unknown"),
         "max_concurrent_requests": tts_manager.semaphore._value if tts_manager.semaphore else 0
     }
+
+@router.post("/tts_stream_optimized")
+async def tts_stream_optimized(
+    request: TTSInputs, 
+    options: StreamingOptions = StreamingOptions(),
+    tts_manager: TTSManager = Depends(get_tts_manager),
+    voice_storage: VoiceStorage = Depends(get_voice_storage),
+    speaker_cache: SpeakerCache = Depends(get_speaker_cache)
+):
+    """
+    Оптимизированная потоковая передача текста в речь
+    
+    Основные оптимизации:
+    - Предварительная обработка текста
+    - Оптимизированные параметры генерации
+    - Улучшенная обработка ошибок
+    - Поддержка отмены генерации
+    """
+    session_id = generate_session_id()
+    
+    # Инициализируем сессию
+    active_sessions[session_id] = {
+        "status": "initializing",
+        "text": request.text,
+        "language": request.language,
+        "created_at": asyncio.get_event_loop().time()
+    }
+    
+    async def optimized_stream():
+        try:
+            # Отправляем WAV-заголовок немедленно
+            if options.add_wav_header:
+                yield encode_audio_common(b"", encode_base64=False)
+            
+            # Отправляем небольшое количество тишины для установления соединения
+            yield generate_silence(50)  # 50мс тишины
+            
+            # Обрабатываем данные диктора в фоне
+            gpt_cond_latent, speaker_embedding = await get_speaker_data(
+                tts_manager.model,
+                speaker_cache,
+                voice_storage,
+                speaker_id=request.speaker_id,
+                audio_file_path=request.audio_file_path
+            )
+            
+            # Обновляем статус сессии
+            if session_id in active_sessions:
+                active_sessions[session_id]["status"] = "processing"
+            
+            # Предварительно обрабатываем текст для более быстрой генерации
+            text_chunks = preprocess_text(request.text)
+            
+            # Обрабатываем фрагменты с минимальной задержкой между ними
+            for chunk_idx, chunk_text in enumerate(text_chunks):
+                # Получаем семафор только для настройки генерации
+                async with tts_manager.semaphore:
+                    chunks_generator = tts_manager.model.inference_stream(
+                        chunk_text,
+                        request.language,
+                        gpt_cond_latent,
+                        speaker_embedding,
+                        stream_chunk_size=options.stream_chunk_size,
+                        enable_text_splitting=True,
+                        generation_config=OPTIMIZED_GENERATION_CONFIG
+                    )
+                
+                # Обрабатываем сгенерированные аудио-фрагменты
+                for audio_chunk in chunks_generator:
+                    # Проверяем на отмену
+                    if session_id in active_sessions and active_sessions[session_id]["status"] == "canceled":
+                        return
+                    
+                    # Обрабатываем и выдаем аудио
+                    processed_chunk = tts_manager.postprocess(audio_chunk)
+                    yield processed_chunk.tobytes()
+            
+            # Отмечаем как завершенное
+            if session_id in active_sessions:
+                active_sessions[session_id]["status"] = "completed"
+                
+        except Exception as e:
+            # Обрабатываем ошибки
+            if session_id in active_sessions:
+                active_sessions[session_id]["status"] = "error"
+                active_sessions[session_id]["error"] = str(e)
+            raise
+        finally:
+            # Планируем очистку
+            asyncio.create_task(tts_manager.cleanup_session(session_id))
+    
+    return StreamingResponse(
+        optimized_stream(),
+        media_type="audio/wav",
+        headers={"X-Session-ID": session_id}
+    )
+
+@router.post("/tts_stream_batch")
+async def tts_stream_batch(
+    request: TTSInputs, 
+    options: StreamingOptions = StreamingOptions(),
+    tts_manager: TTSManager = Depends(get_tts_manager),
+    voice_storage: VoiceStorage = Depends(get_voice_storage),
+    speaker_cache: SpeakerCache = Depends(get_speaker_cache)
+):
+    """
+    Пакетная обработка для длинных текстов с потоковой передачей
+    
+    Особенности:
+    - Разделение длинных текстов на фрагменты
+    - Параллельная обработка фрагментов
+    - Прогресс генерации
+    """
+    session_id = generate_session_id()
+    
+    # Получаем данные диктора
+    gpt_cond_latent, speaker_embedding = await get_speaker_data(
+        tts_manager.model,
+        speaker_cache,
+        voice_storage,
+        speaker_id=request.speaker_id,
+        audio_file_path=request.audio_file_path
+    )
+    
+    # Обрабатываем текст в меньшие фрагменты
+    text_chunks = preprocess_text(request.text)
+    
+    async def batch_stream_generator():
+        """Генерирует аудио-фрагменты из пакетной обработки текста"""
+        active_sessions[session_id] = {
+            "status": "processing",
+            "text": request.text,
+            "language": request.language,
+            "created_at": asyncio.get_event_loop().time(),
+            "progress": 0,
+            "total_chunks": len(text_chunks)
+        }
+        
+        # Специальная обработка первого фрагмента с WAV-заголовком
+        if options.add_wav_header:
+            yield encode_audio_common(b"", encode_base64=False)
+        
+        # Обрабатываем каждый текстовый фрагмент
+        for i, chunk_text in enumerate(text_chunks):
+            # Обновляем прогресс в информации о сессии
+            if session_id in active_sessions:
+                active_sessions[session_id]["progress"] = i
+            
+            # Обрабатываем этот фрагмент с помощью модели
+            async with tts_manager.semaphore:
+                out_chunks = tts_manager.model.inference_stream(
+                    chunk_text,
+                    request.language,
+                    gpt_cond_latent,
+                    speaker_embedding,
+                    stream_chunk_size=options.stream_chunk_size,
+                    enable_text_splitting=True,
+                    generation_config=OPTIMIZED_GENERATION_CONFIG
+                )
+            
+            # Передаем сгенерированные аудио-фрагменты
+            for audio_chunk in out_chunks:
+                processed_chunk = tts_manager.postprocess(audio_chunk)
+                yield processed_chunk.tobytes()
+                
+                # Проверяем, была ли сессия отменена
+                if session_id in active_sessions and active_sessions[session_id]["status"] == "canceled":
+                    return
+        
+        # Обновляем статус сессии по завершении
+        if session_id in active_sessions:
+            active_sessions[session_id]["status"] = "completed"
+            active_sessions[session_id]["progress"] = len(text_chunks)
+    
+    return StreamingResponse(
+        batch_stream_generator(),
+        media_type="audio/wav",
+        headers={"X-Session-ID": session_id}
+    )

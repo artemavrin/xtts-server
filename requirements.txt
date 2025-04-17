@@ -1,8 +1,9 @@
-fastapi>=0.95.1
+fastapi>=0.115.12
 uvicorn>=0.22.0
 pydantic>=2.0.0
 torch==2.5.0
+torchaudio==2.5.0
 numpy==1.22.0
-TTS>=0.13.0
+TTS
 python-multipart>=0.0.6
-transformers>=4.30.1
+transformers==4.35.2
