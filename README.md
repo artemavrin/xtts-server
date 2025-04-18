@@ -54,7 +54,7 @@ xtts-server/
 1. Clone the repository:
 ```bash
 git clone https://github.com/artemavrin/xtts-server.git
-cd xtts-streaming-server
+cd xtts-server
 ```
 
 2. Create and activate virtual environment:
