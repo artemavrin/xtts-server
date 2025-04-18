@@ -25,8 +25,15 @@ print("[3/5] Checking dependencies...")
 try:
     import torch
     gpu_available = torch.cuda.is_available()
-    print(f"      ✅ PyTorch: {torch.__version__} (GPU {'available 🚀' if gpu_available else 'not available 🐢'})")
-    
+    mps_available = torch.mps.is_available()
+    print(f"      ✅ PyTorch: {torch.__version__}")
+    if gpu_available:
+        print(f"      ✅ GPU: available 🚀")
+    if mps_available:
+        print(f"      ✅ MPS: available 🚀")
+    else:
+        print(f"      ❌ no GPU or MPS available")
+
     import transformers
     print(f"      ✅ Transformers: {transformers.__version__}")
 

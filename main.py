@@ -28,8 +28,15 @@ OPTIMIZED_GENERATION_CONFIG = GenerationConfig(
 
 # Multithreading and device setup
 torch.set_num_threads(int(os.environ.get("NUM_THREADS", os.cpu_count())))
-device = torch.device("cuda" if os.environ.get(
-    "USE_CPU", "0") == "0" and torch.cuda.is_available() else "cpu")
+
+if os.environ.get("USE_CPU", "0") == "1":
+    device = torch.device("cpu")
+elif torch.mps.is_available():
+    device = torch.device("mps")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
 
 # Function to apply optimizations based on available hardware
 def configure_model_optimizations():
