@@ -53,7 +53,7 @@ xtts-server/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/artemavrin/xtts-streaming-server.git
+git clone https://github.com/artemavrin/xtts-server.git
 cd xtts-streaming-server
 ```
 
